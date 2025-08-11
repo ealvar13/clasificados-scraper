@@ -46,6 +46,7 @@ def get_cars_from_page(browser, scraped_cars):
             print(f"Error parsing row: {e}")
     return scraped_cars
 
+
 def save_to_db(scraped_cars, db_url=DB_URL):
     engine = create_engine(db_url)
     Base.metadata.create_all(engine)
@@ -75,6 +76,7 @@ def save_to_db(scraped_cars, db_url=DB_URL):
     print(f"✅ Saved {saved_count} new listings.")
     print(f"↪️ Skipped {skipped_count} duplicates.")
     return saved_count, skipped_count
+
 
 # ---- Selenium setup (same as you had) ----
 chrome_options = webdriver.ChromeOptions()

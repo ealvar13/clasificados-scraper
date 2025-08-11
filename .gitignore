@@ -65,3 +65,6 @@ temp/
 
 # Experimental notebooks
 scratch*.ipynb
+
+# Our tracking spreadsheet
+mavericks.csv
