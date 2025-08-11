@@ -1,0 +1,67 @@
+# Byte-compiled / cached files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+*.venv
+
+# Distribution / build directories
+build/
+dist/
+*.egg-info/
+
+# Logs and debug files
+*.log
+logs/
+debug.log
+
+# Local environment variables and secrets
+.env
+*.env
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# MyPy type checking cache
+.mypy_cache/
+
+# Pytest cache
+.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+*.cover
+*.py,cover
+
+# Django-specific
+db.sqlite3
+media/
+staticfiles/
+
+# VS Code and JetBrains IDEs
+.vscode/
+.idea/
+
+# macOS and Windows system files
+.DS_Store
+Thumbs.db
+
+# SQLite or other local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Scratch / temporary files
+scratch*
+tmp/
+temp/
+*.tmp
+*.bak
+*.old
+
+# Experimental notebooks
+scratch*.ipynb
