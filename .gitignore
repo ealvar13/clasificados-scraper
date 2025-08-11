@@ -66,5 +66,7 @@ temp/
 # Experimental notebooks
 scratch*.ipynb
 
-# Our tracking spreadsheet
+# Our tracking spreadsheet and data files
 mavericks.csv
+maverick_listings.csv
+*.csv
