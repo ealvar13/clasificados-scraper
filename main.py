@@ -1,4 +1,4 @@
-import os, time
+import os, time, random
 import undetected_chromedriver as uc
 from datetime import date
 from selenium import webdriver
@@ -17,7 +17,7 @@ from email_report import summarize_today, send_email_report
 
 SEARCH_TERM = "Maverick"
 FUZZ_CUTOFF = 70
-HEADLESS = False
+HEADLESS = True
 DB_URL = os.environ.get("DB_URL", "sqlite:///mavericks.db")
 
 def get_cars_from_page(browser, scraped_cars):
@@ -78,53 +78,126 @@ def save_to_db(scraped_cars, db_url=DB_URL):
     return saved_count, skipped_count
 
 
-# ---- Selenium setup (same as you had) ----
-chrome_options = webdriver.ChromeOptions()
+# ---- Enhanced Selenium setup for headless stealth ----
 chrome_opts = uc.ChromeOptions()
+
+# Basic headless configuration
 if HEADLESS:
     chrome_opts.add_argument("--headless=new")
 
+# Essential anti-detection options
 chrome_opts.add_argument("--no-sandbox")
 chrome_opts.add_argument("--disable-dev-shm-usage")
-chrome_opts.add_argument("--window-size=1920,1080")
 chrome_opts.add_argument("--disable-blink-features=AutomationControlled")
+chrome_opts.add_argument("--window-size=1920,1080")
 
-driver = uc.Chrome(options=chrome_opts, version_main=138)
+# User agent
+chrome_opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+# Try to initialize driver with correct Chrome version
+try:
+    # Chrome version 138 detected from error message
+    driver = uc.Chrome(options=chrome_opts, version_main=138)
+    print("✅ Chrome driver initialized successfully with version 138")
+except Exception as e:
+    print(f"Failed with version 138, trying auto-detection: {e}")
+    try:
+        driver = uc.Chrome(options=chrome_opts)
+        print("✅ Chrome driver initialized with auto-detection")
+    except Exception as e2:
+        print(f"❌ Failed to initialize Chrome driver: {e2}")
+        exit(1)
+
+# Additional stealth measures after driver creation
+try:
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+        "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+    print("✅ Additional stealth measures applied")
+except Exception as e:
+    print(f"Warning: Could not set additional stealth measures: {e}")
+
 driver.set_page_load_timeout(45)
 wait = WebDriverWait(driver, 20)
 
 try:
+    # Add random delay before starting
+    time.sleep(random.uniform(2, 5))
+    
+    print("🌐 Navigating to Clasificados Online...")
     driver.get("https://www.clasificadosonline.com/Transportation.asp")
+    
+    # Random delay to mimic human behavior
+    time.sleep(random.uniform(3, 6))
+    
     search_field = wait.until(ec.element_to_be_clickable((By.XPATH, '//*[@id="Key"]')))
-    search_field.send_keys(SEARCH_TERM)
-    time.sleep(1.5)
+    
+    # Type slowly like a human
+    print(f"🔍 Searching for '{SEARCH_TERM}'...")
+    for char in SEARCH_TERM:
+        search_field.send_keys(char)
+        time.sleep(random.uniform(0.1, 0.3))
+    
+    time.sleep(random.uniform(1, 2))
     search_button = wait.until(ec.element_to_be_clickable((By.NAME, 'Submit2')))
     search_button.click()
-    time.sleep(2)
+    
+    # Wait for results with random delay
+    time.sleep(random.uniform(3, 5))
     wait.until(ec.presence_of_element_located((By.CLASS_NAME, "Tahoma15blacknound")))
 
     car_list = []
+    page_count = 1
+    print(f"📄 Scraping page {page_count}...")
     get_cars_from_page(driver, car_list)
+    
     while ec.presence_of_element_located((By.XPATH, '/html/body/table/tbody/tr/td/table[3]/tbody/tr[1]/td[2]/form[2]/div/table[1]/tbody/tr/td[3]/a')):
-        get_cars_from_page(driver, car_list)
         try:
+            # Random delay between pages
+            time.sleep(random.uniform(2, 4))
+            
             next_button = wait.until(ec.element_to_be_clickable((By.XPATH, '/html/body/table/tbody/tr/td/table[3]/tbody/tr[1]/td[2]/form[2]/div/table[1]/tbody/tr/td[3]/a')))
+            
+            # Scroll to button to mimic human behavior
+            driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
+            time.sleep(random.uniform(0.5, 1.5))
+            
             next_button.click()
-            time.sleep(2)
+            page_count += 1
+            print(f"📄 Scraping page {page_count}...")
+            
+            # Wait for new page to load
+            time.sleep(random.uniform(3, 5))
+            get_cars_from_page(driver, car_list)
+            
         except ElementNotInteractableException:
+            print("📄 Reached last page")
             get_cars_from_page(driver, car_list)
             break
+        except TimeoutException:
+            print("⏰ Timeout waiting for next page button")
+            break
 
+    print(f"🎯 Found {len(car_list)} total listings")
     saved, skipped = save_to_db(car_list, DB_URL)
+    
+    # Generate and send report
     html = summarize_today(car_list, saved, skipped, DB_URL)
     send_email_report(f"Maverick Daily Report – {date.today()}", html)
+    print("📧 Email report sent successfully")
 
 except TimeoutException as e:
-    print(f"Page timed out: {e}")
+    print(f"⏰ Page timed out: {e}")
+except Exception as e:
+    print(f"❌ An error occurred: {e}")
+    import traceback
+    traceback.print_exc()
 
 finally:
     try:
-        driver.quit()
+        if 'driver' in locals():
+            driver.quit()
+            print("🔚 Browser closed")
     except Exception:
         pass
-    driver = None
