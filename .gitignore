@@ -70,3 +70,10 @@ scratch*.ipynb
 mavericks.csv
 maverick_listings.csv
 *.csv
+
+# Project notes and documentation
+notes.md
+*.notes
+
+# Notes
+notes.md

@@ -1,15 +1,14 @@
 import os, time, random
 import undetected_chromedriver as uc
 from datetime import date
-from selenium import webdriver
-from selenium.common import ElementNotInteractableException
+from selenium.common import ElementNotInteractableException, WebDriverException
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as ec
 from bs4 import BeautifulSoup
 from fuzzywuzzy import fuzz
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
 from models import CarListing, Base
@@ -38,9 +37,15 @@ def get_cars_from_page(browser, scraped_cars):
             mileage = mileage_tag.get_text(strip=True).replace("Millas", "").strip() if mileage_tag else ""
             price_tag = row.select_one("span.Tahoma14BrownNound")
             price = price_tag.get_text(strip=True) if price_tag else ""
+            
+            # Extract year from listing text (look for 4-digit years from 2019-2025)
+            import re
+            year_match = re.search(r'\b(201[9]|202[0-5])\b', listing)
+            year = year_match.group(1) if year_match else "Unknown"
+            
             scraped_cars.append({
                 "listing": listing, "link": link, "mileage": mileage,
-                "price": price, "is_hybrid": is_hybrid
+                "price": price, "is_hybrid": is_hybrid, "year": year
             })
         except Exception as e:
             print(f"Error parsing row: {e}")
@@ -53,29 +58,109 @@ def save_to_db(scraped_cars, db_url=DB_URL):
     Session = sessionmaker(bind=engine)
     session = Session()
     saved_count = skipped_count = 0
+    
     for car in scraped_cars:
-        listing = CarListing(
-            listing=car["listing"],
-            link=car["link"],
-            mileage=car["mileage"],
-            price=car["price"],
-            is_hybrid=car["is_hybrid"],
-            date_found=date.today()
-        )
-        try:
-            session.add(listing)
-            session.commit()
-            saved_count += 1
-        except IntegrityError:
-            session.rollback()
-            skipped_count += 1
-        except Exception as e:
-            session.rollback()
-            print(f"❌ Error saving {car['link']}: {e}")
+        # Check if listing already exists
+        existing = session.query(CarListing).filter_by(link=car["link"]).first()
+        
+        if existing:
+            # Update existing record, but preserve manual price if no new price found
+            existing.listing = car["listing"]
+            existing.mileage = car["mileage"]
+            existing.is_hybrid = car["is_hybrid"]
+            existing.year = car["year"]
+            existing.still_available = True  # Mark as active since we found it
+            
+            # Only update price if we found a new one AND it's not manually set
+            if car["price"] and car["price"].strip():
+                if not existing.manual_price:  # Only update if not manually set
+                    existing.price = car["price"]
+                    print(f"🔄 Updated price for existing listing: {car['price']}")
+                else:
+                    print(f"� Skipped price update (manual entry): {existing.listing[:50]}...")
+            else:
+                print(f"💰 Preserved price for: {existing.listing[:50]}...")
+            
+            try:
+                session.commit()
+                skipped_count += 1  # Count as "skipped" since not new
+            except Exception as e:
+                session.rollback()
+                print(f"❌ Error updating {car['link']}: {e}")
+        else:
+            # Create new listing
+            listing = CarListing(
+                listing=car["listing"],
+                link=car["link"],
+                mileage=car["mileage"],
+                price=car["price"],
+                is_hybrid=car["is_hybrid"],
+                year=car["year"],
+                date_found=date.today()
+            )
+            try:
+                session.add(listing)
+                session.commit()
+                saved_count += 1
+            except IntegrityError:
+                session.rollback()
+                skipped_count += 1
+            except Exception as e:
+                session.rollback()
+                print(f"❌ Error saving {car['link']}: {e}")
+    
     session.close()
     print(f"✅ Saved {saved_count} new listings.")
-    print(f"↪️ Skipped {skipped_count} duplicates.")
+    print(f"↪️ Updated {skipped_count} existing listings.")
     return saved_count, skipped_count
+
+
+def check_listing_is_active(db_url, driver):
+    engine = create_engine(db_url)
+    Session = sessionmaker(bind=engine)
+
+
+    inactive_listings_removed = 0
+
+    print("⏰ Checking and removing inactive listings...")
+
+    with Session() as session:
+        cars = session.scalars(
+            select(CarListing).order_by(CarListing.id)).all()
+        for c in cars:
+            if not getattr(c, "still_available", False):
+                continue
+            try:
+                driver.get(c.link)
+                try:
+                    WebDriverWait(driver, 15).until(lambda d: d.execute_script(
+                        "return document.readyState") == "complete")
+                except TimeoutException:
+                    pass
+
+                page_source = driver.page_source
+                if "Anuncio no disponible" in page_source:
+                    c.still_available = False
+                    print(f"Removed {c.id} from the active listings.")
+                    inactive_listings_removed += 1
+                else:
+                    c.still_available = True
+
+            except (TimeoutException, WebDriverException) as e:
+                print(f"[{c.id}] WebDriver error {e.__class__.__name__}: {e}")
+
+            time.sleep(0.4)
+
+        session.commit()
+
+    print(f"✅ Removed {inactive_listings_removed} listings.")
+
+    try:
+        driver.quit()
+    except Exception:
+        pass
+
+    return inactive_listings_removed
 
 
 # ---- Enhanced Selenium setup for headless stealth ----
@@ -181,9 +266,12 @@ try:
 
     print(f"🎯 Found {len(car_list)} total listings")
     saved, skipped = save_to_db(car_list, DB_URL)
+
+    inactive_listings = check_listing_is_active(DB_URL, driver)
+    print(f"Inactive listings type: {type(inactive_listings)}")
     
     # Generate and send report
-    html = summarize_today(car_list, saved, skipped, DB_URL)
+    html = summarize_today(car_list, inactive_listings, saved, skipped, DB_URL)
     send_email_report(f"Maverick Daily Report – {date.today()}", html)
     print("📧 Email report sent successfully")
 

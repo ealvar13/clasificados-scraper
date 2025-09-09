@@ -8,7 +8,7 @@ from email.mime.text import MIMEText
 from datetime import date
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, select, func, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from models import CarListing
 
 load_dotenv()
@@ -19,18 +19,14 @@ DB_URL = os.environ.get("DB_URL", "sqlite:///mavericks.db")
 PRICE_CAP_DEFAULT = 30000
 AGED_DAYS_DEFAULT = 14
 
-def get_total_in_db(db_url: str = DB_URL) -> int:
+def get_total_in_db(db_url: str, only_available: bool = False) -> int:
     engine = create_engine(db_url)
     with Session(engine) as session:
-        return session.execute(
-            select(func.count()).select_from(CarListing)
-        ).scalar_one()
-    
+        stmt = select(func.count()).select_from(CarListing)
+        if only_available:
+            stmt = stmt.where(CarListing.still_available.is_(True))
+        return session.scalar(stmt) or 0
 
-# --- helpers for email sections (put in email_report.py) ---
-import re
-import pandas as pd
-from sqlalchemy import create_engine, text
 
 def _to_int_price(p: str | None):
     if not isinstance(p, str): return pd.NA
@@ -67,45 +63,69 @@ def _df_to_rows_html(df: pd.DataFrame, cols: list[str], limit: int = 12) -> str:
     return "\n".join(rows)
 
 
-def build_hybrid_tables(db_url: str, price_cap: int = 30000, aged_days: int = 14, limit: int = 12):
-    """
-    Load full DB, enrich columns, and return:
-      - hybrids_rows_html: all hybrids cheapest-first (rows only)
-      - aged_rows_html: aged hybrids under cap (rows only)
-      - counts: dict with totals for quick summary badges
-    """
+def build_hybrid_tables(db_url, price_cap, aged_days, limit=12, only_available=False):
     engine = create_engine(db_url)
-    df = pd.read_sql(text("SELECT * FROM cars"), engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        from sqlalchemy import func
+        
+        base = select(CarListing).where(CarListing.is_hybrid.is_(True))
+        if only_available:
+            base = base.where(CarListing.still_available.is_(True))
 
-    # enrich
-    df["date_found"]  = pd.to_datetime(df["date_found"])
-    df["price_num"]   = df["price"].map(_to_int_price).astype("Int64")
-    df["mileage_num"] = df["mileage"].map(_to_int_miles).astype("Int64")
-    df["year"]        = df["listing"].map(_extract_year).astype("Int64")
-    df["days_on_market"] = (pd.Timestamp.today().normalize() - df["date_found"]).dt.days
-    df["is_hybrid"] = df["is_hybrid"].astype("boolean")
+        cheapest = base.order_by(CarListing.price.asc()).limit(limit)
+        
+        # Calculate days using SQL date functions
+        days_sql = func.julianday('now') - func.julianday(CarListing.date_found)
+        aged = base.where(
+            CarListing.price <= price_cap,
+            days_sql >= aged_days
+        ).order_by(days_sql.desc()).limit(limit)
 
-    hybrids = df[df["is_hybrid"] == True].copy()
-    hybrids_sorted = hybrids.sort_values(["price_num", "mileage_num"], ascending=[True, True])
+        cheapest_rows = session.scalars(cheapest).all()
+        aged_rows = session.scalars(aged).all()
 
-    aged_under_cap = hybrids_sorted.query(
-        "price_num.notna() and price_num <= @price_cap and days_on_market >= @aged_days"
-    )
+        # counts aligned to availability
+        counts = {
+            "hybrids_total": session.scalar(
+                select(func.count()).select_from(CarListing).where(
+                    CarListing.is_hybrid.is_(True),
+                    *( [CarListing.still_available.is_(True)] if only_available else [] )
+                )
+            ) or 0,
+            "aged_hybrids": session.scalar(
+                select(func.count()).select_from(CarListing).where(
+                    CarListing.is_hybrid.is_(True),
+                    days_sql >= aged_days,
+                    *( [CarListing.still_available.is_(True)] if only_available else [] )
+                )
+            ) or 0,
+            "aged_under_cap": session.scalar(
+                select(func.count()).select_from(CarListing).where(
+                    CarListing.is_hybrid.is_(True),
+                    days_sql >= aged_days,
+                    CarListing.price <= price_cap,
+                    *( [CarListing.still_available.is_(True)] if only_available else [] )
+                )
+            ) or 0,
+        }
 
-    cols = ["listing", "year", "price", "mileage_num", "days_on_market", "link"]
-    hybrids_rows_html = _df_to_rows_html(hybrids_sorted, cols, limit=limit)
-    aged_rows_html    = _df_to_rows_html(aged_under_cap, cols, limit=limit)
+        # render your HTML rows (example)
+        def row_html(c: CarListing) -> str:
+            return (
+                f"<tr><td>{c.listing}</td><td>{c.year}</td><td>{c.price}</td>"
+                f"<td>{c.mileage}</td><td>{c.days_listed}</td>"
+                f"<td><a href='{c.link}'>link</a></td></tr>"
+            )
 
-    counts = {
-        "hybrids_total": int(hybrids.shape[0]),
-        "aged_hybrids": int((hybrids_sorted["days_on_market"] >= aged_days).sum()),
-        "aged_under_cap": int(aged_under_cap.shape[0]),
-    }
-    return hybrids_rows_html, aged_rows_html, counts
+        hybrids_rows_html = "".join(row_html(c) for c in cheapest_rows)
+        aged_rows_html = "".join(row_html(c) for c in aged_rows)
+        return hybrids_rows_html, aged_rows_html, counts
 
 
 def summarize_today(
     car_list,
+    inactive_listings,
     saved_count: int,
     skipped_count: int,
     db_url: str = DB_URL,
@@ -166,7 +186,8 @@ def summarize_today(
     header_badges = f"""
     <p>🌱 Hybrids total in DB: <b>{counts['hybrids_total']}</b> &nbsp;
        ⏳ Aged hybrids (≥{aged_days}d): <b>{counts['aged_hybrids']}</b> &nbsp;
-       💸 Aged hybrids ≤ ${price_cap:,}: <b>{counts['aged_under_cap']}</b></p>
+       💸 Aged hybrids ≤ ${price_cap:,}: <b>{counts['aged_under_cap']}</b>
+        Listings removed today: {inactive_listings}</p>
     """
 
     # ---- final HTML ----
