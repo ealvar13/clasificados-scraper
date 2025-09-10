@@ -8,6 +8,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as ec
 from bs4 import BeautifulSoup
 from fuzzywuzzy import fuzz
+from webdriver_manager.chrome import ChromeDriverManager
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
@@ -164,34 +165,53 @@ def check_listing_is_active(db_url, driver):
 
 
 # ---- Enhanced Selenium setup for headless stealth ----
-chrome_opts = uc.ChromeOptions()
+def create_chrome_options():
+    """Create fresh Chrome options for each initialization attempt"""
+    chrome_opts = uc.ChromeOptions()
+    
+    # Basic headless configuration
+    if HEADLESS:
+        chrome_opts.add_argument("--headless=new")
+    
+    # Essential anti-detection options
+    chrome_opts.add_argument("--no-sandbox")
+    chrome_opts.add_argument("--disable-dev-shm-usage")
+    chrome_opts.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_opts.add_argument("--window-size=1920,1080")
+    
+    # User agent
+    chrome_opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    return chrome_opts
 
-# Basic headless configuration
-if HEADLESS:
-    chrome_opts.add_argument("--headless=new")
+# Initialize Chrome driver with automatic version management
+driver = None
+max_retries = 3
 
-# Essential anti-detection options
-chrome_opts.add_argument("--no-sandbox")
-chrome_opts.add_argument("--disable-dev-shm-usage")
-chrome_opts.add_argument("--disable-blink-features=AutomationControlled")
-chrome_opts.add_argument("--window-size=1920,1080")
-
-# User agent
-chrome_opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-# Try to initialize driver with correct Chrome version
-try:
-    # Chrome version 138 detected from error message
-    driver = uc.Chrome(options=chrome_opts, version_main=138)
-    print("✅ Chrome driver initialized successfully with version 138")
-except Exception as e:
-    print(f"Failed with version 138, trying auto-detection: {e}")
+for attempt in range(max_retries):
     try:
-        driver = uc.Chrome(options=chrome_opts)
-        print("✅ Chrome driver initialized with auto-detection")
-    except Exception as e2:
-        print(f"❌ Failed to initialize Chrome driver: {e2}")
-        exit(1)
+        print(f"🔧 Attempt {attempt + 1}: Initializing Chrome driver...")
+        
+        # Get the latest Chrome driver path
+        chrome_driver_path = ChromeDriverManager().install()
+        print(f"📍 Using ChromeDriver: {chrome_driver_path}")
+        
+        # Create fresh options for this attempt
+        chrome_opts = create_chrome_options()
+        
+        # Initialize with webdriver-manager path
+        driver = uc.Chrome(options=chrome_opts, driver_executable_path=chrome_driver_path)
+        print("✅ Chrome driver initialized successfully with webdriver-manager")
+        break
+        
+    except Exception as e:
+        print(f"❌ Attempt {attempt + 1} failed: {e}")
+        if attempt < max_retries - 1:
+            print("🔄 Retrying with fresh options...")
+            time.sleep(2)
+        else:
+            print("💥 All attempts failed, exiting...")
+            exit(1)
 
 # Additional stealth measures after driver creation
 try:
