@@ -69,7 +69,9 @@ scratch*.ipynb
 # Our tracking spreadsheet and data files
 mavericks.csv
 maverick_listings.csv
+maverick_analysis.xlsx
 *.csv
+*.xlsx
 
 # Project notes and documentation
 notes.md
